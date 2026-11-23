@@ -180,6 +180,13 @@ export function buildSegments(
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused'
 
+export interface PlayEvents {
+  /** เรียกเมื่อเริ่มพูดแต่ละ segment (ใช้จับเวลาเพื่อแยกไฟล์ทีละบรรทัด) */
+  onSegment?: (tag: number) => void
+  /** เรียกเมื่อพูดครบทุก segment (ไม่เรียกถ้าถูกกดหยุด) */
+  onEnd?: () => void
+}
+
 /** ตัวเล่นเสียงแบบคิว: พูดทีละ segment, หยุดชั่วคราว/เล่นต่อ/หยุดได้ */
 export function useSpeechPlayer() {
   const [status, setStatus] = useState<PlayerStatus>('idle')
@@ -202,7 +209,7 @@ export function useSpeechPlayer() {
   }, [])
 
   const play = useCallback(
-    (segments: Segment[], gapMs = 0) => {
+    (segments: Segment[], gapMs = 0, events: PlayEvents = {}) => {
       if (!isSpeechSupported) return
       stop()
       if (segments.length === 0) return
@@ -224,11 +231,13 @@ export function useSpeechPlayer() {
         if (i >= segments.length) {
           setStatus('idle')
           setActiveTag(null)
+          events.onEnd?.()
           return
         }
         const seg = segments[i++]
         const nextGap = segments[i] && segments[i].tag !== seg.tag ? gapMs : 0
         setActiveTag(seg.tag)
+        events.onSegment?.(seg.tag)
 
         if (seg.pauseMs !== undefined) {
           schedule(next, seg.pauseMs)
