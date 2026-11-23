@@ -11,6 +11,84 @@ const API = 'https://generativelanguage.googleapis.com/v1beta'
 export const GEMINI_RATE = 24000
 
 export class GeminiError extends Error {}
+/** โควตารายวันหมด */
+export class DailyQuotaError extends GeminiError {}
+
+/* ---------- ตัวนับการใช้งาน (นับเฉพาะเครื่องนี้) ---------- */
+
+const USAGE_KEY = 'tts-gemini-usage'
+const USAGE_EVENT = 'tts-gemini-usage-changed'
+/** Google รีเซ็ตโควตารายวันตอนเที่ยงคืนเวลาแปซิฟิก */
+const QUOTA_TZ = 'America/Los_Angeles'
+
+interface Usage {
+  day: string
+  counts: Record<string, number>
+  exhausted: Record<string, boolean>
+}
+
+export function quotaDay(now = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: QUOTA_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(
+    now,
+  )
+}
+
+/** เวลาที่โควตารายวันจะรีเซ็ตครั้งถัดไป */
+export function nextQuotaReset(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: QUOTA_TZ,
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hourCycle: 'h23',
+  }).formatToParts(now)
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0)
+  const elapsed = get('hour') * 3600 + get('minute') * 60 + get('second')
+  return new Date(now.getTime() + (86400 - elapsed) * 1000)
+}
+
+export function formatResetTime(now = new Date()) {
+  return nextQuotaReset(now).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+}
+
+function readUsage(): Usage {
+  const empty = { day: quotaDay(), counts: {}, exhausted: {} }
+  try {
+    const u = JSON.parse(localStorage.getItem(USAGE_KEY) ?? 'null') as Partial<Usage> | null
+    if (u && u.day === empty.day) return { ...empty, ...u }
+  } catch {
+    // อ่าน localStorage ไม่ได้ → เริ่มนับใหม่
+  }
+  return empty
+}
+
+function updateUsage(fn: (u: Usage) => void) {
+  const u = readUsage()
+  fn(u)
+  try {
+    localStorage.setItem(USAGE_KEY, JSON.stringify(u))
+  } catch {
+    // ไม่เป็นไร ตัวนับเป็นแค่ข้อมูลช่วยดู
+  }
+  window.dispatchEvent(new Event(USAGE_EVENT))
+}
+
+/** จำนวนครั้งที่ใช้เสียง AI วันนี้ (ของโมเดลที่เลือก, เฉพาะเครื่องนี้) */
+export function useGeminiUsage(model: string) {
+  const [usage, setUsage] = useState(readUsage)
+  useEffect(() => {
+    const update = () => setUsage(readUsage())
+    window.addEventListener(USAGE_EVENT, update)
+    window.addEventListener('storage', update) // อัปเดตเมื่อใช้งานจากแท็บอื่น
+    const id = window.setInterval(update, 60_000) // เผื่อข้ามเวลารีเซ็ต
+    return () => {
+      window.removeEventListener(USAGE_EVENT, update)
+      window.removeEventListener('storage', update)
+      window.clearInterval(id)
+    }
+  }, [])
+  return { count: usage.counts[model] ?? 0, exhausted: !!usage.exhausted[model], resetAt: formatResetTime() }
+}
 
 /** เสียงสำเร็จรูปของ Gemini (ชื่อ — ลักษณะเสียง) */
 export const GEMINI_VOICES: { name: string; desc: string; gender: 'ญ' | 'ช' }[] = [
@@ -108,8 +186,8 @@ function explain(status: number, body: ApiErrorBody | null): GeminiError {
   if (status === 429) {
     const perDay = err?.details?.some((d) => d.violations?.some((v) => /day/i.test(v.quotaId ?? '')))
     if (perDay)
-      return new GeminiError(
-        'โควตาฟรีของวันนี้หมดแล้ว — ใช้ได้อีกครั้งพรุ่งนี้ ระหว่างนี้สลับไปใช้ "เสียงเบราว์เซอร์" (ฟรีไม่จำกัด) ได้',
+      return new DailyQuotaError(
+        `โควตาฟรีของวันนี้หมดแล้ว — ใช้ได้อีกครั้งเวลา ${formatResetTime()} น. ระหว่างนี้สลับไปใช้ "เสียงเบราว์เซอร์" (ฟรีไม่จำกัด) ได้`,
       )
     const delay = err?.details?.find((d) => d.retryDelay)?.retryDelay
     const sec = delay ? Math.ceil(parseFloat(delay)) : 30
@@ -215,6 +293,10 @@ async function synthesizeChunk(
     const audio = parts.map((p) => p.inlineData).filter((d) => d?.data)
     if (audio.length === 0) throw new GeminiError('AI ไม่ได้ส่งเสียงกลับมา — ลองปรับข้อความหรือคำอธิบายสไตล์ใหม่')
     const pcms = audio.map((d) => decodeAudio(base64ToBytes(d!.data!), d!.mimeType ?? ''))
+    updateUsage((u) => {
+      u.counts[model] = (u.counts[model] ?? 0) + 1
+      delete u.exhausted[model]
+    })
     return concatFloat(pcms)
   }
 
@@ -223,12 +305,27 @@ async function synthesizeChunk(
     try {
       return await request()
     } catch (e) {
+      if (e instanceof DailyQuotaError)
+        updateUsage((u) => {
+          u.exhausted[model] = true
+        })
       if (!(e instanceof RetryableError) || attempt >= 3 || e.retryAfterSec > 70) throw e
       onWait?.(e.retryAfterSec)
       await sleep(e.retryAfterSec * 1000 + 500)
       onWait?.(0)
     }
   }
+}
+
+const CHUNK_MAX = 2000
+
+function chunkId(model: string, chunk: string, s: GeminiSettings) {
+  return JSON.stringify([model, chunk, s.geminiVoice, s.styleId, s.styleNote?.trim()])
+}
+
+/** จำนวนคำขอที่ต้องส่งจริง (ไม่นับส่วนที่สร้างไว้แล้ว) — ใช้บอกว่าจะใช้โควตากี่ครั้ง */
+export function pendingRequests(model: string, text: string, s: GeminiSettings) {
+  return splitText(text, CHUNK_MAX).filter((chunk) => !cache.has(chunkId(model, chunk, s))).length
 }
 
 /** สร้างเสียงจากข้อความ (ข้อความซ้ำจะใช้ผลเดิม ไม่เปลืองโควตา) */
@@ -240,9 +337,9 @@ export async function geminiSpeak(
   onWait?: (sec: number) => void,
 ): Promise<Float32Array> {
   const parts: Float32Array[] = []
-  for (const [i, chunk] of splitText(text, 2000).entries()) {
+  for (const [i, chunk] of splitText(text, CHUNK_MAX).entries()) {
     if (i > 0) parts.push(new Float32Array(Math.round(GEMINI_RATE * 0.15)))
-    const id = JSON.stringify([model, chunk, s.geminiVoice, s.styleId, s.styleNote?.trim()])
+    const id = chunkId(model, chunk, s)
     let p = cache.get(id)
     if (!p) {
       p = synthesizeChunk(key, model, chunk, s, onWait)
