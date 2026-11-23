@@ -5,9 +5,11 @@ import {
   GEMINI_VOICES,
   concatFloat,
   geminiSpeak,
+  pendingRequests,
   silenceFloat,
   toWav,
   useGeminiModels,
+  useGeminiUsage,
   type GeminiModel,
   type GeminiSettings,
 } from '../tts/gemini'
@@ -305,6 +307,15 @@ function ResultPanel({
   )
 }
 
+/** บอกว่าการกดสร้างครั้งนี้จะใช้โควตากี่ครั้ง */
+function QuotaCost({ count }: { count: number }) {
+  return (
+    <p className="text-xs text-slate-500">
+      {count === 0 ? '♻️ สร้างไว้แล้วทั้งหมด — กดอีกครั้งไม่ใช้โควตา' : `💡 การสร้างครั้งนี้จะใช้โควตา ${count} ครั้ง`}
+    </p>
+  )
+}
+
 function ErrorBox({ message }: { message: string }) {
   if (!message) return null
   return <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">⚠ {message}</div>
@@ -405,6 +416,7 @@ function GeminiSetup({
   reload: () => void
 }) {
   const [show, setShow] = useState(false)
+  const usage = useGeminiUsage(model)
   return (
     <div className={`${card} space-y-3`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -447,6 +459,26 @@ function GeminiSetup({
             ))}
           </select>
         </label>
+      )}
+
+      {status === 'ok' && (
+        <div
+          className={`rounded-lg p-3 text-sm ${usage.exhausted ? 'bg-red-50 text-red-700' : 'bg-indigo-50 text-indigo-900'}`}
+        >
+          {usage.exhausted ? (
+            <p className="font-medium">
+              ⛔ โควตาฟรีของวันนี้หมดแล้ว — ใช้ได้อีกครั้งเวลา {usage.resetAt} น. ระหว่างนี้ใช้ "เสียงเบราว์เซอร์" แทนได้
+            </p>
+          ) : (
+            <p>
+              📊 วันนี้ใช้เสียง AI ไปแล้ว <b className="text-base">{usage.count}</b> ครั้ง · โควตารีเซ็ตเวลา{' '}
+              {usage.resetAt} น.
+            </p>
+          )}
+          <p className="mt-1 text-xs opacity-70">
+            นับเฉพาะเครื่องนี้และโมเดลที่เลือก — ถ้าใช้ key เดียวกันหลายเครื่อง ยอดรวมจริงจะมากกว่านี้ (ดูยอดรวมได้ใน AI Studio)
+          </p>
+        </div>
       )}
 
       <details open={status !== 'ok'} className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
@@ -693,6 +725,7 @@ function SingleMode({ engine, voices, gemini }: { engine: Engine; voices: Speech
   const update = (s: Partial<SingleState>) => setState((prev) => ({ ...prev, ...s }))
   const isAi = engine === 'gemini'
   const signature = JSON.stringify([gemini.model, state.text, geminiSettingsOf(state)])
+  const cost = isAi ? pendingRequests(gemini.model, state.text, geminiSettingsOf(state)) : 0
 
   function makeSegments() {
     const segs = buildSegments(state.text, state, voices, 0).map((s, i) => ({ ...s, tag: i }))
@@ -740,6 +773,7 @@ function SingleMode({ engine, voices, gemini }: { engine: Engine; voices: Speech
             >
               {aiBusy ? (wait > 0 ? `⏳ รอโควตา ${wait} วินาที...` : '⏳ AI กำลังสร้างเสียง...') : '✨ สร้างเสียง AI'}
             </button>
+            {gemini.ready && !aiBusy && state.text.trim() && <QuotaCost count={cost} />}
             {!gemini.ready && <p className="text-xs text-slate-500">ใส่ API key ด้านบนก่อนจึงจะสร้างเสียงได้</p>}
             <ErrorBox message={aiError} />
             {aiResult && (
@@ -844,6 +878,12 @@ function ScriptMode({ engine, voices, gemini }: { engine: Engine; voices: Speech
     lines.map((l) => [l.text, l.pauseMs, l.character && geminiSettingsOf(l.character)]),
   ])
   const result = isAi ? aiResult : session.recording
+  const cost = isAi
+    ? lines.reduce(
+        (n, l) => n + (l.pauseMs === undefined && l.character ? pendingRequests(gemini.model, l.text, geminiSettingsOf(l.character)) : 0),
+        0,
+      )
+    : 0
   const clips = result?.clips
   const busy = session.busy || progress !== null
 
@@ -1087,6 +1127,7 @@ function ScriptMode({ engine, voices, gemini }: { engine: Engine; voices: Speech
                     : `⏳ AI กำลังสร้างเสียง ${progress.done}/${progress.total} บรรทัด...`
                   : '✨ สร้างไฟล์เสียงทั้งบท (AI)'}
               </button>
+              {gemini.ready && !progress && lines.length > 0 && <QuotaCost count={cost} />}
               {!gemini.ready && <p className="text-xs text-slate-500">ใส่ API key ด้านบนก่อนจึงจะสร้างเสียงได้</p>}
               <ErrorBox message={aiError} />
               {aiResult && (
