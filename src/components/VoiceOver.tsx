@@ -420,7 +420,7 @@ function GeminiSetup({
           type={show ? 'text' : 'password'}
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value.trim())}
-          placeholder="วาง API key จาก AI Studio ที่นี่ (ขึ้นต้นด้วย AIza...)"
+          placeholder="วาง API key จาก AI Studio ที่นี่"
           className={`${inputCls} flex-1 font-mono`}
           autoComplete="off"
           spellCheck={false}
