@@ -6,6 +6,7 @@ import { Grades } from './components/Grades'
 import { LessonPlans } from './components/LessonPlans'
 import { Students } from './components/Students'
 import { Vocabulary } from './components/Vocabulary'
+import { VoiceOver } from './components/VoiceOver'
 import { StoreProvider } from './store'
 
 const TABS = [
@@ -16,6 +17,7 @@ const TABS = [
   { key: 'assignments', label: 'งาน/การบ้าน', component: Assignments },
   { key: 'lessons', label: 'แผนการสอน', component: LessonPlans },
   { key: 'vocab', label: 'คำศัพท์ & แบบทดสอบ', component: Vocabulary },
+  { key: 'voice', label: 'พากย์เสียง', component: VoiceOver },
 ] as const
 
 function App() {
